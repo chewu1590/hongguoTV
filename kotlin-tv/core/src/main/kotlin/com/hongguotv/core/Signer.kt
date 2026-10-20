@@ -150,6 +150,24 @@ internal class Signer(private val clock: () -> Long = System::currentTimeMillis,
         }
         return output.base64()
     }
+    /**
+     * 播放集群不接受签名头：带 X-Gorgon / X-Medusa 等会返回 Code 110001 或 HTTP 200 空响应。
+     * 这里只拼公共查询参数，不生成任何签名头（搜索集群仍走 [sign]）。
+     */
+    fun unsigned(base: String, values: Map<String,String>, body: ByteArray? = null): Request {
+        val now = clock(); val ts = (now / 1000).toInt(); val ticket = now
+        val query = encode(values + mapOf("ts" to ts.toString(), "_rticket" to ticket.toString()))
+        val headers = linkedMapOf(
+            "User-Agent" to VendorConstants.VIDEO_UA,
+            "Accept" to "application/json; charset=utf-8,application/x-protobuf",
+            "x-ss-req-ticket" to ticket.toString(),
+            "x-tt-request-tag" to "t=0;n=0",
+            "sdk-version" to "2",
+            "x-xs-from-web" to "0"
+        )
+        if (body != null) headers["Content-Type"]="application/json; charset=UTF-8"
+        return Request("$base?$query",headers,body)
+    }
     fun sign(base: String, values: Map<String,String>, body: ByteArray? = null): Request {
         val now = clock(); val ts = (now / 1000).toInt()
         var ticket = now; var query: String
