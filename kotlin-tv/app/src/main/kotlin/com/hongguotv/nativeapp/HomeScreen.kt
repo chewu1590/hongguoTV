@@ -15,19 +15,22 @@ class SeriesPreview(context: Context): LinearLayout(context) {
     private fun label(size: Float,color: Int)=TextView(context).apply { textSize=size; setTextColor(color); includeFontPadding=false }
     private val title=label(27f,TvStyle.text).apply { minLines=1; maxLines=1; ellipsize=TextUtils.TruncateAt.END; typeface=Typeface.create("sans-serif-medium",Typeface.NORMAL) }
     private val meta=label(12f,TvStyle.muted).apply { minLines=1; maxLines=1; ellipsize=TextUtils.TruncateAt.END }
+    private val hint=label(11f,TvStyle.muted).apply { minLines=1; maxLines=1 }
     init {
         orientation=VERTICAL
         val dp=resources.displayMetrics.density
         setPadding(0,(7*dp).toInt(),0,(12*dp).toInt())
         addView(title)
         addView(meta,LayoutParams(-1,-2).apply { topMargin=(5*dp).toInt() })
+        addView(hint,LayoutParams(-1,-2).apply { topMargin=(4*dp).toInt() })
         show(null,"")
     }
-    fun show(series: Series?,status: String) {
+    fun show(series: Series?,status: String,resume: Boolean=false) {
         val nextTitle=series?.title ?: "下一段好故事，从这里开始"
         val nextMeta=if(series==null) "浏览片库，选择你想看的剧" else listOf(status,series.badge,series.tags).flatMap { it.split('·') }.map(String::trim).filter { it.isNotBlank() && !it.all(Char::isDigit) }.distinct().joinToString("  /  ")
         if(title.text.toString()!=nextTitle) title.text=nextTitle
         if(meta.text.toString()!=nextMeta) meta.text=nextMeta
+        hint.text=if(series==null) "" else if(resume) "确认继续观看  ·  长按确认管理" else "确认查看详情  ·  长按确认管理"
     }
 }
 
@@ -36,7 +39,7 @@ class HomeScreen(
     context: Context,
     private val top: View,
     private val loadCover: (ImageView,String)->Unit,
-    private val selected: (Series,String)->Unit,
+    private val selected: (Series,String,Boolean)->Unit,
     private val open: (Series,Boolean)->Unit,
     private val actions: (Series,View)->Unit,
     private val remember: (String)->Unit
@@ -90,7 +93,7 @@ class HomeScreen(
         return true
     }
 
-    fun refreshSelection() { cards[lastFocus]?.entry?.let { selected(it.series,it.label) } }
+    fun refreshSelection() { cards[lastFocus]?.entry?.let { selected(it.series,it.label,it.resume) } }
 
     /** Retry visible cover requests after the owner cancels work for a page or lifecycle change. */
     fun reloadArtwork() {
@@ -113,15 +116,18 @@ class HomeScreen(
             horizontal.addView(line); block.addView(horizontal)
             val rowCards=mutableListOf<Card>()
             fun addCard(entry: Entry?,moreAction: (() -> Unit)?=null) {
-                val width=((resources.displayMetrics.widthPixels*.9f-dp(70))/6).toInt().coerceAtLeast(dp(100))
+                val compact=shelf.key=="resume"
+                val columns=if(compact) if(resources.configuration.fontScale>1.2f) 2 else 3 else 6
+                val width=((resources.displayMetrics.widthPixels*.9f-dp(14*(columns-1)))/columns).toInt().coerceAtLeast(dp(100))
                 val key=if(entry!=null) "${shelf.key}:${entry.series.id}" else "${shelf.key}:more"
-                val view=LinearLayout(context).apply { orientation=VERTICAL; id=View.generateViewId(); tag=key; isFocusable=true; isFocusableInTouchMode=true; setPadding(dp(4),dp(4),dp(4),dp(8)); background=shape(false) }
+                val view=LinearLayout(context).apply { orientation=if(compact) HORIZONTAL else VERTICAL; gravity=Gravity.CENTER_VERTICAL; id=View.generateViewId(); tag=key; isFocusable=true; isFocusableInTouchMode=true; setPadding(dp(4),dp(4),dp(4),dp(8)); background=shape(false) }
                 val image=if(entry!=null) ImageView(context).apply { scaleType=ImageView.ScaleType.FIT_CENTER; importantForAccessibility=IMPORTANT_FOR_ACCESSIBILITY_NO } else null
-                view.addView(image ?: label("›",36f).apply { gravity=Gravity.CENTER },LayoutParams(-1,((width-dp(8))/TvStyle.POSTER_ASPECT).toInt()))
+                view.addView(image ?: label("›",36f).apply { gravity=Gravity.CENTER },if(compact) LayoutParams(dp(56),dp(80)) else LayoutParams(-1,((width-dp(8))/TvStyle.POSTER_ASPECT).toInt()))
                 val title=label(entry?.series?.title ?: "查看全部",14f).apply { minLines=2; maxLines=2; ellipsize=TextUtils.TruncateAt.END; setPadding(dp(3),dp(5),dp(3),0) }
                 val badge=label(entry?.label ?: shelf.title,12f,TvStyle.muted).apply { minLines=1; maxLines=1; ellipsize=TextUtils.TruncateAt.END; setPadding(dp(3),dp(2),0,0) }
                 val progress=ProgressBar(context,null,android.R.attr.progressBarStyleHorizontal).apply { max=100; progress=entry?.progress ?: 0; visibility=if(entry?.progress==null) INVISIBLE else VISIBLE; progressTintList=android.content.res.ColorStateList.valueOf(accent) }
-                view.addView(title); view.addView(badge); view.addView(progress,LayoutParams(-1,dp(3)).apply { topMargin=dp(4) })
+                val textArea=if(compact) LinearLayout(context).apply { orientation=VERTICAL; setPadding(dp(8),0,dp(5),0); view.addView(this,LayoutParams(0,-2,1f)) } else view
+                textArea.addView(title); textArea.addView(badge); textArea.addView(progress,LayoutParams(-1,dp(3)).apply { topMargin=dp(4) })
                 val card=Card(key,view,image,title,badge,progress,entry)
                 view.contentDescription=entry?.let { "${shelf.title}，${it.series.title}，${it.label}" } ?: "查看全部${shelf.title}"
                 view.setOnClickListener { lastFocus=key; remember(key); card.entry?.let { open(it.series,it.resume) } ?: moreAction?.invoke() }
@@ -132,7 +138,7 @@ class HomeScreen(
                 view.setOnFocusChangeListener { _,focused ->
                     view.background=shape(focused)
                     if(focused) {
-                        lastFocus=key; remember(key); card.entry?.let { selected(it.series,it.label) }
+                        lastFocus=key; remember(key); card.entry?.let { selected(it.series,it.label,it.resume) }
                         if(!restoring) {
                             loadNearbySelection()
                             if(lastRow!=shelf.key) scroll.post { if(revision==ticket && view.hasFocus()) reveal(block) }
@@ -243,12 +249,14 @@ class HomeScreen(
     private fun fitArtwork() {
         if(height<=0) return
         rows.forEach { row ->
+            if(row.key=="resume") return@forEach
             val textHeight=row.cards.maxOf { item -> item.view.paddingTop+item.view.paddingBottom+(1 until item.view.childCount).sumOf { child ->
                 val view=item.view.getChildAt(child); val params=view.layoutParams as LayoutParams
                 view.measuredHeight+params.topMargin+params.bottomMargin
             } }
             val desired=((row.cards.first().view.width-dp(8))/TvStyle.POSTER_ASPECT).toInt()
-            val imageHeight=minOf(desired,(height-row.block.getChildAt(0).measuredHeight-textHeight-dp(8)).coerceAtLeast(dp(48)))
+            val compactHeight=if(resources.configuration.fontScale<=1.2f && rows.firstOrNull()?.key=="resume") rows.first().block.measuredHeight+dp(16) else 0
+            val imageHeight=minOf(desired,(height-compactHeight-row.block.getChildAt(0).measuredHeight-textHeight-dp(12)).coerceAtLeast(dp(48)))
             row.cards.forEach { card -> card.view.getChildAt(0).let { artwork -> if(artwork.layoutParams.height!=imageHeight) artwork.layoutParams=artwork.layoutParams.apply { height=imageHeight } } }
         }
     }

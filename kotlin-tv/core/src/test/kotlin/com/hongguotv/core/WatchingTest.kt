@@ -32,9 +32,31 @@ class WatchingTest {
         val episodes=listOf("new","a","b","c")
         assertEquals(ResumeTarget(2,52000),ResumePlayback.target(episodes,"b",52000,false))
         assertEquals(ResumeTarget(3,0),ResumePlayback.target(episodes,"b",52000,true))
-        assertEquals(ResumeTarget(3,0),ResumePlayback.target(episodes,"c",52000,true))
+        assertEquals(ResumeTarget(3,0,true),ResumePlayback.target(episodes,"c",52000,true))
         assertEquals(ResumeTarget(0,0),ResumePlayback.target(episodes,"removed",52000,false))
         assertEquals(ResumeTarget(1,0),ResumePlayback.target(episodes,"a",-100,false))
+    }
+    @Test fun `new episodes resume normally after previously reaching the latest episode`() {
+        assertTrue(ResumePlayback.target(listOf("a"),"a",90000,true).caughtUp)
+        assertEquals(ResumeTarget(1,0),ResumePlayback.target(listOf("a","b"),"a",90000,true))
+        assertEquals(ResumeTarget(1,24000),ResumePlayback.target(listOf("b","a"),"a",24000,false))
+    }
+    @Test fun `recovery never increases quality and offers no downgrade at the minimum`() {
+        assertEquals(720,PlaybackQuality.lower(1080))
+        assertEquals(480,PlaybackQuality.lower(720))
+        assertNull(PlaybackQuality.lower(480))
+        assertNull(PlaybackQuality.lower(360))
+    }
+    @Test fun `seek preview depends on hold time and stays within episode boundaries`() {
+        assertEquals(30000L,SeekPreview.target(20000,120000,1,0))
+        assertEquals(10000L,SeekPreview.target(20000,120000,-1,0))
+        assertEquals(35500L,SeekPreview.target(20000,120000,1,1000))
+        assertEquals(119500L,SeekPreview.target(20000,120000,1,10000))
+        assertEquals(0L,SeekPreview.target(20000,120000,-1,10000))
+        assertEquals(0L,SeekPreview.target(0,200,1,5000))
+        val sparse=listOf(0L,1000L,3000L).map { SeekPreview.target(20000,120000,1,it) }.last()
+        val frequent=(0L..3000L step 50).map { SeekPreview.target(20000,120000,1,it) }.last()
+        assertEquals(sparse,frequent)
     }
     @Test fun `automatic recovery is bounded until the user starts a new attempt`() {
         val budget=RecoveryBudget()

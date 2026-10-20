@@ -61,7 +61,8 @@ object UpdateFiles {
                 output.fd.sync()
             }
             if (!verify(partial, update)) throw IOException("安装包校验未通过，请重新下载")
-            if (!partial.renameTo(destination)) throw IOException("无法保存安装包")
+            java.nio.file.Files.move(partial.toPath(),destination.toPath(),
+                java.nio.file.StandardCopyOption.ATOMIC_MOVE,java.nio.file.StandardCopyOption.REPLACE_EXISTING)
         } finally { partial.delete() }
     }
 }

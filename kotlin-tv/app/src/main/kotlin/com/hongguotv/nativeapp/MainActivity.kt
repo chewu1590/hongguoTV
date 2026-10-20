@@ -122,6 +122,8 @@ class MainActivity: Activity() {
     private var tab=0
     private var page=1
     private var query=""
+    private var browseInteraction=0L
+    private var exitRequestedAt=0L
     private var catalog=emptyList<Series>()
     private var hasMore=false
     private var catalogFocus=""
@@ -154,6 +156,9 @@ class MainActivity: Activity() {
     private var sleepButton: TextView?=null
     private var speedDialog: AlertDialog?=null
     private var pendingSeek: Long?=null
+    private var seekOrigin=0L
+    private var sessionQuality: Int?=null
+    private fun playbackQuality()=sessionQuality ?: library.maxQuality
     private var playError=false
     private var lastSaved=0L
     private var quality=""
@@ -171,7 +176,7 @@ class MainActivity: Activity() {
         }
     }
     private val hideHud=Runnable { if(screen=="player" && !panel && player?.isPlaying==true && !playError) hidePlaybackOverlay() }
-    private val seekRunnable=Runnable { pendingSeek?.let { player?.seekTo(it) }; pendingSeek=null }
+    private fun commitSeek() { pendingSeek?.let { player?.seekTo(it) }; pendingSeek=null; if(screen=="player") showHud() }
     private fun dp(value: Number)=(value.toFloat()*resources.displayMetrics.density).toInt()
     private fun widthDp()=resources.displayMetrics.widthPixels/resources.displayMetrics.density
     private fun lp(w: Int=LinearLayout.LayoutParams.MATCH_PARENT,h: Int=LinearLayout.LayoutParams.WRAP_CONTENT)=LinearLayout.LayoutParams(w,h)
@@ -312,7 +317,7 @@ class MainActivity: Activity() {
         "resume" -> library.history().filterNot { library.watched(it.series.id) }.map { it.series }
         else -> if(tab==3) library.favorites() else library.history().map { it.series }
     }
-    private fun showCatalog(load: Boolean=false,focusNav: Boolean=false,focusType: Boolean=false) {
+    private fun showCatalog(load: Boolean=false,focusNav: Boolean=false,focusType: Boolean=false,focusResults: Boolean=false) {
         initialCatalogPending=false; restoreStoppedPage=false; pendingDetail=null
         // Never cache a new page number with the previous page's results while a request is pending.
         if(load) {
@@ -326,7 +331,7 @@ class MainActivity: Activity() {
         brand.addView(ImageView(this).apply { setImageResource(com.hongguotv.nativeapp.R.drawable.app_icon) },lp(dp(28),dp(28)).apply { rightMargin=dp(9) })
         brand.addView(text(BuildConfig.BRAND_SHORT,22f).apply { typeface=Typeface.create("sans-serif-medium",Typeface.NORMAL) })
         top.addView(brand,lp(dp(120),dp(44)))
-        listOf("首页","搜索","排行榜","收藏","最近观看","设置").forEachIndexed { index,label ->
+        listOf("首页","搜索","漫剧榜","收藏","最近观看","设置").forEachIndexed { index,label ->
             val item=addButton(top,label,index==tab) { switchTab(index) }
             fun paint(focused: Boolean) {
                 item.setTextColor(if(focused) bg else if(index==tab) accent else muted)
@@ -362,6 +367,20 @@ class MainActivity: Activity() {
             val searchRow=row(); val input=EditText(this).apply { id=View.generateViewId(); hint="输入${library.contentType.label}名称或关键词"; setText(query); textSize=16f; setTextColor(white); setHintTextColor(muted); isSingleLine=true; maxLines=1; filters=arrayOf(android.text.InputFilter.LengthFilter(80)); imeOptions=android.view.inputmethod.EditorInfo.IME_ACTION_SEARCH }
             searchRow.addView(input,lp(0,dp(45)).apply { weight=1f; rightMargin=dp(10) })
             fun search() { val next=input.text.toString().trim(); if(next.isBlank()) { input.requestFocus(); return }; runSearch(next) }
+            input.showSoftInputOnFocus=false
+            fun editSearch() { input.requestFocus(); (getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager).showSoftInput(input,InputMethodManager.SHOW_IMPLICIT) }
+            input.setOnClickListener { editSearch() }
+            input.setOnKeyListener { _,key,event ->
+                when {
+                    key==KeyEvent.KEYCODE_DPAD_CENTER -> { if(event.action==KeyEvent.ACTION_UP) editSearch(); true }
+                    key==KeyEvent.KEYCODE_DPAD_DOWN || key==KeyEvent.KEYCODE_DPAD_UP -> {
+                        if(event.action==KeyEvent.ACTION_DOWN) input.focusSearch(if(key==KeyEvent.KEYCODE_DPAD_DOWN) View.FOCUS_DOWN else View.FOCUS_UP)?.requestFocus()
+                        true
+                    }
+                    key==KeyEvent.KEYCODE_DPAD_RIGHT && input.selectionStart==input.length() -> { if(event.action==KeyEvent.ACTION_DOWN) searchButton?.requestFocus(); true }
+                    else -> false
+                }
+            }
             searchInput=input; searchButton=addButton(searchRow,"搜索") { search() }; input.nextFocusUpId=typeButtons.getValue(library.contentType).id; searchButton?.nextFocusUpId=input.nextFocusUpId
             lateinit var recent: TextView
             recent=addButton(searchRow,"历史") { showSearchHistory(recent) }; recent.nextFocusUpId=input.nextFocusUpId
@@ -404,8 +423,9 @@ class MainActivity: Activity() {
         }
         if(load) {
             if(tab==0) catalogGrid(body,focusNav,focusType,loading=true)
-            else { message(body,"正在加载…"); if(focusType) typeButtons[library.contentType]?.requestFocus() else nav[tab].requestFocus() }
+            else { message(body,"正在加载…"); if(focusType) typeButtons[library.contentType]?.requestFocus() else if(focusResults) searchInput?.requestFocus() else nav[tab].requestFocus() }
             val requestTab=tab; val requestPage=page; val requestQuery=query; val requestType=library.contentType
+            val submissionInteraction=browseInteraction
             work({
                 val result=when(requestTab) { 0 -> repository.home(requestPage,requestType); 2 -> repository.comicRanking(requestPage); else -> repository.search(requestQuery,requestPage,requestType) }
                 result
@@ -417,9 +437,12 @@ class MainActivity: Activity() {
                     homeScreen?.refresh?.setOnClickListener { catalog=result.items; hasMore=result.hasMore; ranking=result.ranking; showCatalog() }
                 } else {
                     catalog=result.items; hasMore=result.hasMore; ranking=result.ranking
-                    val keepNav=nav.any { it.hasFocus() }; val keepType=typeButtons.values.any { it.hasFocus() }
+                    val autoFocus=focusResults && submissionInteraction==browseInteraction && !tvTools.showing && !updater.showing
+                    val preservedFocus=if(!autoFocus) currentFocus else null
+                    val keepNav=!autoFocus && nav.any { it.hasFocus() }; val keepType=!autoFocus && typeButtons.values.any { it.hasFocus() }
                     rankSubtitle?.text=ranking?.updatedText?.ifBlank { "来源：红果漫剧热播榜" } ?: "来源：红果漫剧热播榜"
                     body.removeAllViews(); catalogGrid(body,keepNav || focusNav,keepType || focusType)
+                    if(preservedFocus?.isAttachedToWindow==true) preservedFocus.requestFocus()
                 }
             }, { problem ->
                 AppLog.w("load failed tab=$requestTab type=${requestType.label} page=$requestPage q=\"${requestQuery.take(40)}\"",problem)
@@ -462,13 +485,25 @@ class MainActivity: Activity() {
         val displayed=if(localCatalog()) catalog.drop((page-1)*pageSize).take(pageSize) else if(tab==0) catalog.filterNot { it.id in library.hidden() } else catalog.take(30)
         if(displayed.isEmpty()) {
             message(list,if(loading) "正在加载推荐…" else when(tab) { 1 -> if(query.isBlank()) "输入关键词，用遥控器确认搜索" else "没有找到相关${library.contentType.label}，换个关键词试试"; 3 -> "在剧集详情中选择收藏，喜欢的剧就会出现在这里"; 4 -> "播放过的剧集会自动保存在这里"; else -> "本页没有更多内容" })
+            if(tab==1) {
+                val history=library.searches().filter { it.type==library.contentType }.take(5)
+                if(history.isNotEmpty()) {
+                    message(list,"最近搜索")
+                    val suggestions=history.map { entry -> addButton(list,entry.query) { runSearch(entry.query,entry.type) } }
+                    searchInput?.nextFocusDownId=suggestions.first().id
+                    suggestions.forEachIndexed { i,view ->
+                        view.nextFocusUpId=suggestions.getOrNull(i-1)?.id ?: searchInput!!.id
+                        view.nextFocusDownId=suggestions.getOrNull(i+1)?.id ?: view.id
+                    }
+                }
+            }
             if((tab<=2 || localCatalog()) && page>1) addButton(list,"上一页") { page--; showCatalog(!localCatalog()) }
             if((tab<=2 || localCatalog()) && hasMore) addButton(list,"下一页") { page++; showCatalog(!localCatalog()) }
             if(resumeCards.isNotEmpty()) {
                 typeButtons.values.forEach { it.nextFocusDownId=resumeCards.first().id }
                 resumeCards.forEach { it.nextFocusDownId=it.id }
             }
-            if(focusType) typeButtons[library.contentType]?.requestFocus() else if(collectionBack!=null && !focusNav) collectionBack?.requestFocus() else if(focusNav || resumeCards.isEmpty()) nav[tab].requestFocus() else resumeCards.first().requestFocus()
+            if(focusType) typeButtons[library.contentType]?.requestFocus() else if(tab==1 && !focusNav) searchInput?.requestFocus() else if(collectionBack!=null && !focusNav) collectionBack?.requestFocus() else if(focusNav || resumeCards.isEmpty()) nav[tab].requestFocus() else resumeCards.first().requestFocus()
             return
         }
         val cards=mutableListOf<View>(); val count=6; val gap=dp(14); val width=((resources.displayMetrics.widthPixels*.9f-gap*(count-1))/count).toInt()
@@ -491,7 +526,7 @@ class MainActivity: Activity() {
                 card.setOnClickListener { catalogFocus=item.id; openDetail(item,tab==4 || collection=="resume" || collection=="updates") }
                 card.setOnLongClickListener { catalogFocus=item.id; quickActions(item,card); true }
                 card.setOnKeyListener { _,key,event -> if(key==KeyEvent.KEYCODE_MENU) { if(event.action==KeyEvent.ACTION_UP) { catalogFocus=item.id; quickActions(item,card) }; true } else false }
-                card.setOnFocusChangeListener { _,focused -> card.background=TvStyle.card(this,focused); if(focused) { catalogFocus=item.id; loadCover(image,item.cover); preview.show(item,selectionStatus(item)); if(!restoringScroll) scroll.post { scroll.smoothScrollTo(0,when { line.top<scroll.scrollY -> line.top; line.bottom>scroll.scrollY+scroll.height -> (line.bottom-scroll.height).coerceAtLeast(0); else -> scroll.scrollY }) } } }
+                card.setOnFocusChangeListener { _,focused -> card.background=TvStyle.card(this,focused); if(focused) { catalogFocus=item.id; loadCover(image,item.cover); preview.show(item,selectionStatus(item),tab==4 || collection=="resume" || collection=="updates"); if(!restoringScroll) scroll.post { scroll.smoothScrollTo(0,when { line.top<scroll.scrollY -> line.top; line.bottom>scroll.scrollY+scroll.height -> (line.bottom-scroll.height).coerceAtLeast(0); else -> scroll.scrollY }) } } }
                 // The row measures its tallest card, then stretches siblings to keep badges aligned.
                 line.addView(card,lp(width,-1).apply { if(columnIndex<count-1) rightMargin=gap }); cards+=card
             }
@@ -563,7 +598,7 @@ class MainActivity: Activity() {
         homeUpdateCount=library.updatedFavorites()
         val preview=SeriesPreview(this); selectionPreview=preview; body.addView(preview)
         val top=if(inlineHomeFilters()) nav[0] else typeButtons.getValue(library.contentType)
-        val home=HomeScreen(this,top,::loadCover,{ item,label -> preview.show(item,if(label.startsWith("第 ")) selectionStatus(item) else listOf(label,selectionStatus(item)).filter { it.isNotBlank() }.joinToString(" · ")) },
+        val home=HomeScreen(this,top,::loadCover,{ item,label,resume -> preview.show(item,if(label.startsWith("第 ")) selectionStatus(item) else listOf(label,selectionStatus(item)).filter { it.isNotBlank() }.joinToString(" · "),resume) },
             { item,resume -> openDetail(item,resume) },::quickActions,{ catalogFocus=it })
         homeScreen=home; body.addView(home,lp(-1,0).apply { weight=1f })
         val hot=catalog.filterNot { it.id in library.hidden() }
@@ -589,7 +624,7 @@ class MainActivity: Activity() {
         val later=library.later(); val hidden=library.hidden(); val hot=catalog.filterNot { it.id in hidden }
         return listOf(
             HomeScreen.Shelf("resume","接着看",recent.take(8).map { p -> HomeScreen.Entry(p.series,
-                "第 ${p.episodeIndex+1} 集 · ${if(p.completed) "接着看下一集" else formatTime(p.position)}",true,
+                if(p.completed) "第 ${p.episodeIndex+1} 集已看完" else "第 ${p.episodeIndex+1} 集 · ${formatTime(p.position)}",true,
                 if(p.duration>0) (p.position*100/p.duration).toInt().coerceIn(0,100) else null) },
                 if(recent.size>8) { { showCollection("resume") } } else null),
             HomeScreen.Shelf("updates","收藏有更新",updates.take(8).map { HomeScreen.Entry(it,library.favoriteLabel(it.id),true) },
@@ -725,7 +760,7 @@ class MainActivity: Activity() {
         val clean=value.trim(); if(clean.isEmpty() || clean.length>80) return
         (searchInput as? EditText)?.let { (getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager).hideSoftInputFromWindow(it.windowToken,0) }
         if(library.contentType!=type) { library.contentType=type; for(index in 0..1) { tabState.remove(index); tabFocus.remove(index) } }
-        library.rememberSearch(clean,type); query=clean; tab=1; page=1; catalogFocus=""; showCatalog(true)
+        library.rememberSearch(clean,type); query=clean; tab=1; page=1; catalogFocus=""; showCatalog(true,focusResults=true)
     }
     private fun showSearchHistory(anchor: View) {
         val history=library.searches()
@@ -744,6 +779,7 @@ class MainActivity: Activity() {
         })
     }
     private fun openDetail(series: Series,resume: Boolean=false,autoplay: Boolean=true) {
+        sessionQuality=null
         pendingDetail=series; detailAutoplay=autoplay
         invalidatePage(); releaseCatalogViews(); screen="detail"; directPlayback=resume; detail=null; synopsisExpanded=false
         val body=base(series.title); message(body,"正在加载剧集…")
@@ -753,10 +789,10 @@ class MainActivity: Activity() {
             val progress=library.progress(series.id)
             val target=ResumePlayback.target(result.episodes,progress?.episodeId,progress?.position ?: 0,progress?.completed==true)
             episodeIndex=target.index; group=episodeIndex/20
-            if(resume) playEpisode(target.index,target.position,autoplay=detailAutoplay) else showDetail(false)
+            if(resume && !target.caughtUp && !library.watched(series.id)) playEpisode(target.index,target.position,autoplay=detailAutoplay) else { directPlayback=false; showDetail(false) }
         }, { problem -> AppLog.w("detail failed ${series.id}",problem); error(body,problem) { openDetail(series,resume,detailAutoplay) } })
     }
-    private fun showDetail(focusEpisode: Boolean) {
+    private fun showDetail(focusEpisode: Boolean,focusGroup: Boolean=false) {
         invalidatePage(); releaseCatalogViews(); screen="detail"; val data=detail ?: return showCatalog()
         val body=base("剧集详情")
         val scroll=ScrollView(this).apply { isVerticalScrollBarEnabled=false }; val content=column(); scroll.addView(content); body.addView(scroll,lp(-1,0).apply { weight=1f })
@@ -768,12 +804,13 @@ class MainActivity: Activity() {
         val description=data.series.description.ifBlank { "选择剧集开始观看" }
         val synopsis=text(description,15f,muted).apply { maxLines=if(synopsisExpanded) 20 else 2; ellipsize=TextUtils.TruncateAt.END }
         info.addView(synopsis)
-        val actions=row(); actions.setPadding(0,dp(12),0,0); info.addView(actions)
+        val actions=row(); actions.setPadding(0,dp(12),0,0); info.addView(HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled=false; addView(actions) })
         val progress=library.progress(data.series.id)
-        val resumeIndex=progress?.let { data.episodes.indexOf(it.episodeId).takeIf { n -> n>=0 } } ?: 0
-        val resumePosition=progress?.takeIf { !it.completed && resumeIndex==it.episodeIndex }?.position ?: 0
+        val target=ResumePlayback.target(data.episodes,progress?.episodeId,progress?.position ?: 0,progress?.completed==true)
         val watched=library.watched(data.series.id)
-        val play=addButton(actions,if(watched) "重新观看" else if(progress!=null && !progress.completed) "继续第 ${resumeIndex+1} 集" else "开始观看") { playEpisode(if(watched) 0 else if(progress?.completed==true) (resumeIndex+1).coerceAtMost(data.episodes.lastIndex) else resumeIndex,if(watched) 0 else resumePosition) }
+        if(watched || target.caughtUp) info.addView(text(if(watched) "整剧已看完" else "已追到最新 · 当前可观看 ${data.episodes.size} 集",14f,accent))
+        val play=addButton(actions,when { watched -> "从第 1 集重看"; target.caughtUp -> "重看最后一集"; progress!=null -> "继续第 ${target.index+1} 集"; else -> "开始观看" }) { playEpisode(if(watched) 0 else target.index,if(watched) 0 else target.position) }
+        if(target.caughtUp && !watched) addButton(actions,"从第 1 集重看") { playEpisode(0) }
         lateinit var favorite: TextView
         favorite=addButton(actions,if(library.favorite(data.series.id)) "已收藏" else "收藏") {
             favoriteMonitor.stop()
@@ -791,9 +828,9 @@ class MainActivity: Activity() {
         content.addView(hero)
         val groupRow=row(); groupRow.setPadding(0,dp(3),0,dp(5))
         val maxGroup=data.episodes.lastIndex/20; group=group.coerceIn(0,maxGroup)
-        val previous=addButton(groupRow,"‹ 上一组") { if(group>0) { group--; showDetail(true) } }.apply { isEnabled=group>0; isFocusable=group>0; alpha=if(group>0) 1f else .4f }
-        groupRow.addView(text("第 ${group*20+1}—${minOf((group+1)*20,data.episodes.size)} 集",16f).apply { gravity=Gravity.CENTER },lp(dp(190),dp(42)))
-        addButton(groupRow,"下一组 ›") { if(group<maxGroup) { group++; showDetail(true) } }.apply { isEnabled=group<maxGroup; isFocusable=group<maxGroup; alpha=if(group<maxGroup) 1f else .4f }
+        val groupScroll=HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled=false }
+        val groupButtons=row(); groupScroll.addView(groupButtons); groupRow.addView(groupScroll,lp(0,-2).apply { weight=1f })
+        val ranges=(0..maxGroup).map { index -> addButton(groupButtons,"${index*20+1}–${minOf((index+1)*20,data.episodes.size)}",index==group) { group=index; showDetail(false,focusGroup=true) } }
         lateinit var jump: TextView
         jump=addButton(groupRow,"跳转集数") { tvTools.episodePicker(data.episodes.size,episodeIndex,jump) { target -> episodeIndex=target; group=target/20; showDetail(true) } }
         content.addView(groupRow)
@@ -804,8 +841,12 @@ class MainActivity: Activity() {
             repeat(10-numbers.size) { line.addView(Space(this),lp(0,dp(42)).apply { weight=1f; rightMargin=dp(6) }) }
             content.addView(line,lp(-1,dp(49)))
         }
-        episodes.forEachIndexed { i,v -> v.nextFocusLeftId=if(i%10==0) v.id else episodes[i-1].id; v.nextFocusRightId=if(i%10==9 || i==episodes.lastIndex) v.id else episodes[i+1].id; if(i>=10) v.nextFocusUpId=episodes[i-10].id; v.nextFocusDownId=if(i+10<episodes.size) episodes[i+10].id else v.id }
-        if(focusEpisode) episodes.getOrNull((episodeIndex-group*20).coerceIn(0,episodes.lastIndex))?.requestFocus() else play.requestFocus()
+        episodes.forEachIndexed { i,v -> v.nextFocusLeftId=if(i%10==0) v.id else episodes[i-1].id; v.nextFocusRightId=if(i%10==9 || i==episodes.lastIndex) v.id else episodes[i+1].id; v.nextFocusUpId=if(i>=10) episodes[i-10].id else ranges[group].id; v.nextFocusDownId=if(i+10<episodes.size) episodes[i+10].id else if(i/10<episodes.lastIndex/10) episodes.last().id else v.id }
+        ranges.forEachIndexed { i,v -> v.nextFocusLeftId=ranges.getOrNull(i-1)?.id ?: v.id; v.nextFocusRightId=ranges.getOrNull(i+1)?.id ?: jump.id; v.nextFocusDownId=episodes.first().id; v.nextFocusUpId=play.id }
+        play.nextFocusDownId=ranges[group].id; favorite.nextFocusDownId=ranges[group].id; synopsisButton.nextFocusDownId=jump.id
+        jump.nextFocusLeftId=ranges[group].id; jump.nextFocusDownId=episodes.first().id; jump.nextFocusUpId=synopsisButton.id
+        if(focusGroup) ranges[group].requestFocus() else if(focusEpisode) episodes.getOrNull((episodeIndex-group*20).coerceIn(0,episodes.lastIndex))?.requestFocus() else play.requestFocus()
+        groupScroll.post { groupScroll.scrollTo((ranges[group].left-dp(8)).coerceAtLeast(0),0) }
     }
     private fun playEpisode(index: Int,position: Long=0,autoplay: Boolean=true,recovering: Boolean=false) {
         updater.interrupt()
@@ -814,7 +855,7 @@ class MainActivity: Activity() {
         val reuse=screen=="player" && player!=null && playerView!=null && !recovering && !playError
         library.setWatched(data.series.id,false)
         val selectedIndex=index.coerceIn(0,data.episodes.lastIndex)
-        val prefetched=if(position==0L && !recovering) preparedNext.take("${data.episodes[selectedIndex]}:${library.maxQuality}") else null
+        val prefetched=if(position==0L && !recovering) preparedNext.take("${data.episodes[selectedIndex]}:${playbackQuality()}") else null
         val claimedHttp=if(prefetched!=null) prefetchHttp.also { prefetchHttp=null } else null
         saveProgress(); library.flush(); invalidatePage(); favoriteMonitor.stop(); releaseCatalogViews()
         if(reuse) {
@@ -823,7 +864,7 @@ class MainActivity: Activity() {
             playerListener?.let { player?.removeListener(it) }; playerListener=null
             player?.stop(); player?.clearMediaItems()
             video?.close(); video=null; closeTransport(playbackHttp); playbackHttp=null
-            main.removeCallbacks(hideHud); main.removeCallbacks(seekRunnable); pendingSeek=null
+            main.removeCallbacks(hideHud); pendingSeek=null
         } else releasePlayer()
         artwork.cancelPage(clearMemory=true)
         playbackHttp=claimedHttp; video=prefetched
@@ -855,7 +896,7 @@ class MainActivity: Activity() {
         playbackText.text="正在获取播放地址…"; progressBar.progress=0; progressBar.visibility=View.VISIBLE; hidePlaybackOverlay()
         controls.removeAllViews(); controls.visibility=View.GONE; transportPlay=null; sleepButton=null
         syncMediaSession()
-        val requestedId=data.episodes[episodeIndex]; val maxQuality=library.maxQuality; val ticket=generation
+        val requestedId=data.episodes[episodeIndex]; val maxQuality=playbackQuality(); val ticket=generation
         work({ prefetched ?: RemoteVideo(repository.http,repository.stream(requestedId,maxQuality)).prepare() }, { remote ->
             video=remote; quality=remote.info.quality
             val p=player ?: run {
@@ -919,7 +960,7 @@ class MainActivity: Activity() {
         val p=player ?: return; val data=detail ?: return
         if(!foreground || !p.isPlaying || !library.autoNext || playError || sleepStopped || episodeIndex>=data.episodes.lastIndex) return
         if(!PrefetchPolicy.nearEnd(p.currentPosition,p.duration,p.playbackParameters.speed)) return
-        val id=data.episodes[episodeIndex+1]; val quality=library.maxQuality; val key="$id:$quality"
+        val id=data.episodes[episodeIndex+1]; val quality=playbackQuality(); val key="$id:$quality"
         if(preparedNext.isFresh(key) || prefetchJob?.isDone==false) return
         val now=android.os.SystemClock.elapsedRealtime()
         if(readySince==0L || now-readySince<3000 || p.bufferedPosition-p.currentPosition<5000) return
@@ -959,7 +1000,10 @@ class MainActivity: Activity() {
         playbackText.text=if(decoding) "电视无法解码当前视频，可尝试更低清晰度。" else "播放失败，可重试或切换清晰度。"
         val actions=row(); controls.addView(actions)
         addButton(actions,"立即重试") { playEpisode(episodeIndex,retryPosition,retryAutoplay) }.requestFocus()
-        addButton(actions,"尝试 720P") { library.maxQuality=720; playEpisode(episodeIndex,retryPosition,retryAutoplay) }
+        val actual=Regex("^(\\d+)").find(quality)?.value?.toIntOrNull() ?: playbackQuality()
+        PlaybackQuality.lower(minOf(actual,playbackQuality()))?.let { lower ->
+            addButton(actions,"本次尝试 ${lower}P") { sessionQuality=lower; cancelPrefetch(); playEpisode(episodeIndex,retryPosition,retryAutoplay) }
+        }
         addButton(actions,"返回选集") { returnToDetail(true) }
         if(retryable && !sleepStopped) {
             addButton(controls,"停止自动重试") { cancelRecovery(); playbackText.text="自动重试已停止，观看位置已保留。" }
@@ -974,18 +1018,19 @@ class MainActivity: Activity() {
     private fun showHud() {
         if(screen!="player") return
         hud.visibility=View.VISIBLE; updatePlaybackText(); main.removeCallbacks(hideHud)
-        if(!panel && player?.isPlaying==true) main.postDelayed(hideHud,4500)
+        if(!panel && pendingSeek==null && player?.isPlaying==true) main.postDelayed(hideHud,4500)
     }
     private fun updatePlaybackText() {
-        transportPlay?.text=if(player?.playWhenReady==true) "暂停" else "播放"
+        transportPlay?.text=if(player?.playbackState==Player.STATE_ENDED) "重播本集" else if(player?.playWhenReady==true) "暂停" else "播放"
         sleepButton?.text="定时 ${sleepTimer.label()}"
         if(screen!="player" || playError) return
         if(sleepStopped) { playbackText.text="定时停止已生效 · 观看位置已保存 · 按播放可继续"; return }
         if(!playbackReady) { playbackText.text=(if(!requestedAutoplay) "准备后保持暂停 · " else "")+if(video==null) "正在获取播放地址…" else "正在缓冲…"; return }
         val p=player ?: return
         val duration=p.duration.coerceAtLeast(0); val position=pendingSeek ?: p.currentPosition
-        val state=when { p.playbackState==Player.STATE_BUFFERING -> "缓冲中"; p.playbackState==Player.STATE_ENDED -> "本集已结束"; !p.playWhenReady -> "已暂停"; else -> "正在播放" }
-        playbackText.text="$state  ·  ${formatTime(position)} / ${formatTime(duration)}  ·  $quality  ·  ${PlaybackSpeed.label(p.playbackParameters.speed)}"+(if(sleepTimer.active) "  ·  定时 ${sleepTimer.label()}" else "")
+        val state=when { p.playbackState==Player.STATE_BUFFERING -> "缓冲中"; p.playbackState==Player.STATE_ENDED -> if(episodeIndex==detail?.episodes?.lastIndex) "已追到最新 · 当前可观看 ${episodeIndex+1} 集" else "本集已结束"; !p.playWhenReady -> "已暂停"; else -> "正在播放" }
+        playbackText.text=if(pendingSeek!=null) "将跳到 ${formatTime(position)} / ${formatTime(duration)}  ·  ${if(position>=seekOrigin) "+" else "−"}${formatTime(kotlin.math.abs(position-seekOrigin))}  ·  松开方向键定位"
+            else "$state  ·  ${formatTime(position)} / ${formatTime(duration)}  ·  $quality${if(sessionQuality!=null) "（本次观看）" else ""}  ·  ${PlaybackSpeed.label(p.playbackParameters.speed)}"+(if(sleepTimer.active) "  ·  定时 ${sleepTimer.label()}" else "")
         progressBar.progress=if(duration>0) (position*1000/duration).toInt().coerceIn(0,1000) else 0
     }
     private fun requestPlayback(play: Boolean) {
@@ -1001,7 +1046,7 @@ class MainActivity: Activity() {
     private fun togglePlayback()=requestPlayback(!(if(playbackReady) player?.playWhenReady ?: requestedAutoplay else requestedAutoplay))
     private fun seekTo(position: Long) {
         val p=player ?: return; if(!playbackReady || p.duration<=0) return
-        main.removeCallbacks(seekRunnable); pendingSeek=null
+        pendingSeek=null
         p.seekTo(position.coerceIn(0,(p.duration-500).coerceAtLeast(0))); updatePlaybackText(); syncMediaSession(); showHud()
     }
     private fun skipEpisode(direction: Int) {
@@ -1049,12 +1094,12 @@ class MainActivity: Activity() {
             if(anchor.tag!="playback-settings") anchor.text=(if(inPlayer) "画面 " else "画面模式  ·  ")+library.frameMode.label
         })
     }
-    private fun seek(direction: Int,repeat: Int) {
+    private fun seek(direction: Int,repeat: Int,heldMillis: Long=0) {
         val p=player ?: return; if(!playbackReady) return
         val duration=p.duration; if(duration<=0) return
-        val step=if(repeat>4) 30000 else 10000
-        pendingSeek=((pendingSeek ?: p.currentPosition)+direction*step).coerceIn(0,(duration-500).coerceAtLeast(0))
-        main.removeCallbacks(seekRunnable); main.postDelayed(seekRunnable,250); updatePlaybackText(); showHud()
+        if(repeat==0 || pendingSeek==null) seekOrigin=pendingSeek ?: p.currentPosition
+        pendingSeek=SeekPreview.target(seekOrigin,duration,direction,heldMillis)
+        showHud()
     }
     private fun showPanel() {
         if(playError) return
@@ -1066,20 +1111,24 @@ class MainActivity: Activity() {
         val options=row().apply { setPadding(0,dp(8),0,0) }; controls.addView(options)
         lateinit var episodes: TextView
         episodes=addButton(options,"选集") { showEpisodePanel(episodes) }
+        lateinit var speed: TextView
+        speed=addButton(options,"倍速 ${PlaybackSpeed.label(library.playbackSpeed)}") { showSpeedPicker(speed) }
         lateinit var more: TextView
         more=addButton(options,"播放设置") {
-            tvTools.choose("播放设置",listOf("倍速 ${PlaybackSpeed.label(library.playbackSpeed)}","清晰度 ${library.maxQuality}P","画面 ${library.frameMode.label}","定时 ${sleepTimer.label()}","从头播放"),more,{ choice ->
+            tvTools.choose("播放设置",listOf("清晰度 ${playbackQuality()}P"+(if(sessionQuality!=null) " · 本次观看" else ""),"画面 ${library.frameMode.label}","定时 ${sleepTimer.label()}","从头播放"),more,{ choice ->
                 main.post {
                     if(screen=="player" && more.isAttachedToWindow) when(choice) {
-                        0 -> showSpeedPicker(more)
-                        1 -> showQualityPicker(more,true)
-                        2 -> showFramePicker(more,true)
-                        3 -> showSleepPicker(more)
-                        4 -> { seekTo(0); hidePanel() }
+                        0 -> showQualityPicker(more,true)
+                        1 -> showFramePicker(more,true)
+                        2 -> showSleepPicker(more)
+                        3 -> { seekTo(0); hidePanel() }
                     }
                 }
             })
         }.apply { tag="playback-settings" }
+        if(player?.playbackState==Player.STATE_ENDED && episodeIndex==detail?.episodes?.lastIndex) {
+            addButton(controls,"标记整剧已看完") { detail?.let { library.setWatched(it.series.id,true) }; returnToDetail(true) }
+        }
         play.requestFocus()
     }
     private fun showSpeedPicker(anchor: TextView,inPlayer: Boolean=true) {
@@ -1104,9 +1153,9 @@ class MainActivity: Activity() {
     private fun showQualityPicker(anchor: TextView,inPlayer: Boolean) {
         val options=PlaybackQuality.options
         val dialog=AlertDialog.Builder(this).setTitle("全局默认清晰度")
-            .setSingleChoiceItems(options.map { "${it}P" }.toTypedArray(),options.indexOf(library.maxQuality)) { popup,index ->
-                val target=options[index]; val changed=library.maxQuality!=target
-                library.maxQuality=target; popup.dismiss()
+            .setSingleChoiceItems(options.map { "${it}P" }.toTypedArray(),options.indexOf(if(inPlayer) playbackQuality() else library.maxQuality)) { popup,index ->
+                val target=options[index]; val changed=(if(inPlayer) playbackQuality() else library.maxQuality)!=target
+                library.maxQuality=target; if(inPlayer) sessionQuality=null; popup.dismiss()
                 if(anchor.tag!="playback-settings") anchor.text=(if(inPlayer) "清晰度 " else "默认清晰度  ·  ")+"${target}P"
                 if(inPlayer && changed) playEpisode(episodeIndex,currentPosition(),player?.playWhenReady ?: requestedAutoplay)
             }.setNegativeButton("取消",null).create()
@@ -1148,14 +1197,14 @@ class MainActivity: Activity() {
         val wasForeground=foreground; foreground=false
         val oldPanel=episodePanel; episodePanel=null; oldPanel?.dismiss(); foreground=wasForeground
         speedDialog?.dismiss(); speedDialog=null
-        main.removeCallbacks(hideHud); main.removeCallbacks(seekRunnable); pendingSeek=null
+        main.removeCallbacks(hideHud); pendingSeek=null
         playerListener?.let { player?.removeListener(it) }; playerListener=null
         video?.close(); video=null; playerView?.player=null; playerView=null; player?.release(); player=null; playbackReady=false; transportPlay=null; sleepButton=null
         closeTransport(playbackHttp); playbackHttp=null
         window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
     }
     private fun returnToDetail(forceDetail: Boolean=false) {
-        sleepTimer.cancel(); sleepStopped=false; saveProgress(); library.flush(); invalidatePage(); releasePlayer()
+        commitSeek(); sleepTimer.cancel(); sleepStopped=false; saveProgress(); library.flush(); invalidatePage(); releasePlayer(); sessionQuality=null
         if(directPlayback && !forceDetail) showCatalog() else { directPlayback=false; showDetail(true) }
     }
     private fun goBack() {
@@ -1163,14 +1212,21 @@ class MainActivity: Activity() {
         when(screen) {
             "player" -> if(hud.visibility==View.VISIBLE && !playError) hidePlaybackOverlay() else returnToDetail()
             "detail" -> showCatalog()
-            else -> if(collection!=null) { leaveCollection(); showCatalog() } else if(nav.any { it.hasFocus() }) { if(tab!=0) { switchTab(0); nav[0].requestFocus() } else finish() } else nav.getOrNull(tab)?.requestFocus()
+            else -> if(collection!=null) { leaveCollection(); showCatalog() } else if(nav.any { it.hasFocus() }) { if(tab!=0) { switchTab(0); nav[0].requestFocus() } else {
+                val now=android.os.SystemClock.elapsedRealtime()
+                if(exitRequestedAt>0 && now-exitRequestedAt<=2500) finish()
+                else { exitRequestedAt=now; Toast.makeText(this,"再按返回退出",Toast.LENGTH_SHORT).show() }
+            } } else nav.getOrNull(tab)?.requestFocus()
         }
     }
     @Deprecated("TV remote back is handled through the activity")
     override fun onBackPressed()=goBack()
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        if(event.action==KeyEvent.ACTION_DOWN) { browseInteraction++; if(event.keyCode!=KeyEvent.KEYCODE_BACK) exitRequestedAt=0 }
         if(screen=="player") {
             val key=event.keyCode
+            if(event.action==KeyEvent.ACTION_DOWN && pendingSeek!=null && key !in listOf(KeyEvent.KEYCODE_DPAD_LEFT,KeyEvent.KEYCODE_DPAD_RIGHT)) commitSeek()
+            if(event.action==KeyEvent.ACTION_UP && key in listOf(KeyEvent.KEYCODE_DPAD_LEFT,KeyEvent.KEYCODE_DPAD_RIGHT) && pendingSeek!=null) { commitSeek(); return true }
             if(key==KeyEvent.KEYCODE_BACK) { if(event.action==KeyEvent.ACTION_UP) goBack(); return true }
             if(key in listOf(KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE,KeyEvent.KEYCODE_MEDIA_PLAY,KeyEvent.KEYCODE_MEDIA_PAUSE,KeyEvent.KEYCODE_MEDIA_NEXT,KeyEvent.KEYCODE_MEDIA_PREVIOUS,KeyEvent.KEYCODE_MEDIA_STOP,KeyEvent.KEYCODE_MEDIA_FAST_FORWARD,KeyEvent.KEYCODE_MEDIA_REWIND)) {
                 if(event.action==KeyEvent.ACTION_DOWN && event.repeatCount==0) when(key) {
@@ -1179,8 +1235,8 @@ class MainActivity: Activity() {
                     KeyEvent.KEYCODE_MEDIA_NEXT -> skipEpisode(1)
                     KeyEvent.KEYCODE_MEDIA_PREVIOUS -> skipEpisode(-1)
                     KeyEvent.KEYCODE_MEDIA_STOP -> returnToDetail()
-                    KeyEvent.KEYCODE_MEDIA_FAST_FORWARD -> seek(1,0)
-                    KeyEvent.KEYCODE_MEDIA_REWIND -> seek(-1,0)
+                    KeyEvent.KEYCODE_MEDIA_FAST_FORWARD -> { seek(1,0); commitSeek() }
+                    KeyEvent.KEYCODE_MEDIA_REWIND -> { seek(-1,0); commitSeek() }
                     else -> togglePlayback()
                 }
                 return true
@@ -1188,8 +1244,8 @@ class MainActivity: Activity() {
             if(!panel) {
                 if(key in listOf(KeyEvent.KEYCODE_DPAD_LEFT,KeyEvent.KEYCODE_DPAD_RIGHT,KeyEvent.KEYCODE_DPAD_CENTER,KeyEvent.KEYCODE_ENTER,KeyEvent.KEYCODE_DPAD_UP,KeyEvent.KEYCODE_DPAD_DOWN,KeyEvent.KEYCODE_MENU)) {
                     if(event.action==KeyEvent.ACTION_DOWN) when(key) {
-                        KeyEvent.KEYCODE_DPAD_LEFT -> seek(-1,event.repeatCount)
-                        KeyEvent.KEYCODE_DPAD_RIGHT -> seek(1,event.repeatCount)
+                        KeyEvent.KEYCODE_DPAD_LEFT -> seek(-1,event.repeatCount,event.eventTime-event.downTime)
+                        KeyEvent.KEYCODE_DPAD_RIGHT -> seek(1,event.repeatCount,event.eventTime-event.downTime)
                         KeyEvent.KEYCODE_DPAD_CENTER,KeyEvent.KEYCODE_ENTER -> if(event.repeatCount==0) togglePlayback()
                         KeyEvent.KEYCODE_DPAD_DOWN -> if(event.repeatCount==0) showEpisodePanel(hud)
                         KeyEvent.KEYCODE_DPAD_UP,KeyEvent.KEYCODE_MENU -> if(event.repeatCount==0) showPanel()
@@ -1230,6 +1286,7 @@ class MainActivity: Activity() {
         } else libraryLoadError?.let(::showLibraryError)
     }
     override fun onPause() {
+        commitSeek(); exitRequestedAt=0
         updater.pause()
         foreground=false; main.removeCallbacks(tick); cancelRecovery(); cancelPrefetch(); mediaSession.deactivate()
         sleepTimer.cancel(); favoriteMonitor.stop(); detailAutoplay=false; requestedAutoplay=false; pausedForLifecycle=true

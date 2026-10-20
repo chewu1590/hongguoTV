@@ -18,6 +18,12 @@ object TvStyle {
     /** 选中态底色：主色与背景按比例混合，换品牌色时自动跟随，不用改各处写死的色值 */
     val selectedTint=blend(accent,background,.24f)
     val navTint=blend(accent,background,.16f)
+    /** Choose readable foreground even when a custom brand accent is supplied. */
+    val onAccent: Int get() {
+        fun channel(value: Int): Double { val c=value/255.0; return if(c<=.04045) c/12.92 else Math.pow((c+.055)/1.055,2.4) }
+        val luminance=.2126*channel(Color.red(accent))+.7152*channel(Color.green(accent))+.0722*channel(Color.blue(accent))
+        return if(luminance>.179) Color.BLACK else Color.WHITE
+    }
     private fun blend(top: Int,bottom: Int,ratio: Float)=Color.rgb(
         (Color.red(top)*ratio+Color.red(bottom)*(1-ratio)).toInt(),
         (Color.green(top)*ratio+Color.green(bottom)*(1-ratio)).toInt(),

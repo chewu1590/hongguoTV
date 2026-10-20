@@ -6,6 +6,7 @@ import org.json.JSONObject
 object PlaybackQuality {
     val options=listOf(480,720,1080)
     fun normalize(value: Int)=value.takeIf { it in options } ?: 1080
+    fun lower(current: Int)=options.lastOrNull { it<current }
 }
 
 /** One automatic recovery budget per episode; only an explicit user retry resets it. */
@@ -17,15 +18,25 @@ class RecoveryBudget {
     fun reset() { attempts=0 }
 }
 
-data class ResumeTarget(val index: Int,val position: Long)
+data class ResumeTarget(val index: Int,val position: Long,val caughtUp: Boolean=false)
 object ResumePlayback {
     fun target(episodes: List<String>,episodeId: String?,position: Long,completed: Boolean): ResumeTarget {
         require(episodes.isNotEmpty())
         val index=episodes.indexOf(episodeId)
         if(index<0) return ResumeTarget(0,0)
-        return if(completed) ResumeTarget((index+1).coerceAtMost(episodes.lastIndex),0)
+        return if(completed) ResumeTarget((index+1).coerceAtMost(episodes.lastIndex),0,index==episodes.lastIndex)
             else ResumeTarget(index,position.coerceAtLeast(0))
     }
+}
+
+/** Time-based preview, independent of the remote's repeat frequency. Commit on key release. */
+object SeekPreview {
+    fun offset(heldMillis: Long): Long {
+        val elapsed=heldMillis.coerceAtLeast(0)
+        return 10_000L+(elapsed-450).coerceAtLeast(0)*10+(elapsed-2_000).coerceAtLeast(0)*10
+    }
+    fun target(origin: Long,duration: Long,direction: Int,heldMillis: Long)=
+        (origin+direction*offset(heldMillis)).coerceIn(0,(duration-500).coerceAtLeast(0))
 }
 
 /** Seen count is a high-water mark, so temporary catalog shrinkage is not a new update. */

@@ -23,7 +23,7 @@ class EpisodePanel(
     private fun label(value: String,size: Float=17f)=TextView(activity).apply { text=value; textSize=size; setTextColor(TvStyle.text); setPadding(dp(8),dp(6),dp(8),dp(6)) }
     private fun button(value: String,active: Boolean=false,action: ()->Unit)=label(value,16f).apply {
         id=View.generateViewId(); gravity=Gravity.CENTER; minHeight=dp(46); isFocusable=true; isFocusableInTouchMode=true
-        fun paint(focus: Boolean) { background=GradientDrawable().apply { setColor(if(focus) TvStyle.accent else if(active) TvStyle.selectedTint else TvStyle.surface); cornerRadius=dp(6).toFloat() } }
+        fun paint(focus: Boolean) { setTextColor(if(focus) TvStyle.onAccent else TvStyle.text); background=GradientDrawable().apply { setColor(if(focus) TvStyle.accent else if(active) TvStyle.selectedTint else TvStyle.surface); cornerRadius=dp(6).toFloat() } }
         paint(false); setOnFocusChangeListener { _,hasFocus -> paint(hasFocus) }; setOnClickListener { action() }
     }
     fun show() {
@@ -38,7 +38,7 @@ class EpisodePanel(
         }
     }
     fun dismiss()=dialog.dismiss()
-    private fun render() {
+    private fun render(focusGroup: Boolean=false) {
         val content=LinearLayout(activity).apply { orientation=LinearLayout.VERTICAL; setPadding(dp(14),dp(12),dp(14),dp(12)); setBackgroundColor(TvStyle.background) }
         content.addView(label("选集  /  正在看第 ${current+1} 集",20f))
         val actions=LinearLayout(activity)
@@ -48,10 +48,13 @@ class EpisodePanel(
         listOf(close,jump).forEach { actions.addView(it,LinearLayout.LayoutParams(0,-2,1f).apply { setMargins(dp(3),dp(3),dp(3),dp(3)) }) }
         content.addView(actions)
         val paging=LinearLayout(activity)
-        val previous=button("‹ 上一组") { group--; focused=group*20; render() }.apply { isEnabled=group>0; isFocusable=isEnabled; alpha=if(isEnabled) 1f else .4f }
-        val next=button("下一组 ›") { group++; focused=group*20; render() }.apply { isEnabled=(group+1)*20<count; isFocusable=isEnabled; alpha=if(isEnabled) 1f else .4f }
-        listOf(previous,next).forEach { paging.addView(it,LinearLayout.LayoutParams(0,-2,1f).apply { setMargins(dp(3),dp(3),dp(3),dp(3)) }) }
-        content.addView(paging)
+        val groupScroll=HorizontalScrollView(activity).apply { isHorizontalScrollBarEnabled=false; addView(paging) }
+        val groups=(0..(count-1)/20).map { index ->
+            button("${index*20+1}–${minOf((index+1)*20,count)}",index==group) { group=index; focused=group*20; render(true) }.also {
+                paging.addView(it,LinearLayout.LayoutParams(dp(112),-2).apply { setMargins(dp(3),dp(3),dp(3),dp(3)) })
+            }
+        }
+        content.addView(groupScroll)
         content.addView(label("第 ${group*20+1}—${minOf((group+1)*20,count)} 集 / 共 $count 集",14f))
         val scroll=ScrollView(activity); val grid=LinearLayout(activity).apply { orientation=LinearLayout.VERTICAL }; scroll.addView(grid)
         content.addView(scroll,LinearLayout.LayoutParams(-1,0,1f))
@@ -59,7 +62,9 @@ class EpisodePanel(
         (group*20 until minOf((group+1)*20,count)).toList().chunked(5).forEach { indexes ->
             val row=LinearLayout(activity)
             indexes.forEach { index ->
-                val cell=button("${index+1}",index==current) { select(index) }
+                val cell=button("${index+1}"+(if(index==current) " ●" else ""),index==current) { select(index) }
+                val paint=cell.onFocusChangeListener
+                cell.setOnFocusChangeListener { view,hasFocus -> paint?.onFocusChange(view,hasFocus); if(hasFocus) focused=index }
                 cell.contentDescription="第 ${index+1} 集"+(if(index==current) "，当前播放" else "")
                 row.addView(cell,LinearLayout.LayoutParams(0,-2,1f).apply { setMargins(dp(3),dp(3),dp(3),dp(3)) }); cells+=cell
             }
@@ -69,15 +74,17 @@ class EpisodePanel(
         cells.forEachIndexed { i,cell ->
             cell.nextFocusLeftId=cells[if(i%5==0) i else i-1].id
             cell.nextFocusRightId=cells[if(i%5==4 || i==cells.lastIndex) i else i+1].id
-            cell.nextFocusUpId=if(i>=5) cells[i-5].id else if(i<3 && previous.isFocusable) previous.id else if(next.isFocusable) next.id else jump.id
+            cell.nextFocusUpId=if(i>=5) cells[i-5].id else groups[group].id
             cell.nextFocusDownId=cells[if(i+5<cells.size) i+5 else if(i/5<cells.lastIndex/5) cells.lastIndex else i].id
         }
-        previous.nextFocusUpId=close.id; next.nextFocusUpId=jump.id
-        previous.nextFocusDownId=cells.first().id; next.nextFocusDownId=cells[minOf(4,cells.lastIndex)].id
-        close.nextFocusDownId=if(previous.isFocusable) previous.id else cells.first().id
-        jump.nextFocusDownId=if(next.isFocusable) next.id else cells[minOf(4,cells.lastIndex)].id
+        groups.forEachIndexed { i,view ->
+            view.nextFocusLeftId=groups[(i-1).coerceAtLeast(0)].id; view.nextFocusRightId=groups[(i+1).coerceAtMost(groups.lastIndex)].id
+            view.nextFocusUpId=jump.id; view.nextFocusDownId=cells.first().id
+        }
+        close.nextFocusDownId=groups[group].id; jump.nextFocusDownId=groups[group].id
         close.nextFocusLeftId=close.id; close.nextFocusRightId=jump.id; jump.nextFocusLeftId=close.id; jump.nextFocusRightId=jump.id
         dialog.setContentView(content)
-        cells[(focused-group*20).coerceIn(0,cells.lastIndex)].requestFocus()
+        if(focusGroup) groups[group].requestFocus() else cells[(focused-group*20).coerceIn(0,cells.lastIndex)].requestFocus()
+        groupScroll.post { groupScroll.scrollTo((groups[group].left-dp(12)).coerceAtLeast(0),0) }
     }
 }
