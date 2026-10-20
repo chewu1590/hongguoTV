@@ -56,28 +56,46 @@ class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().connectT
         require(page in 1..100)
         return ComicRank.parse(text("$site/rank/hot-comic-drama?page=$page"),page)
     }
-    /** 漫剧榜单分页缓存，本地搜索兜底时避免重复拉取。 */
-    private val comicCatalog=linkedMapOf<Int, Pair<Long, List<Series>>>()
-    private fun comicCatalogPage(page: Int): List<Series> {
-        synchronized(comicCatalog) { comicCatalog[page]?.let { if(clock()-it.first<300000) return it.second } }
-        val items=comicRanking(page).items
-        synchronized(comicCatalog) {
-            comicCatalog[page]=clock() to items
-            while(comicCatalog.size>6) comicCatalog.remove(comicCatalog.keys.first())
+    /**
+     * 漫剧完整目录（站点 /category/comic，当前共 74 部 / 4 页）的本地索引。
+     * 应用内搜索接口对漫剧已失效，站点也没有漫剧搜索路由，所以搜索退化为在完整目录内匹配。
+     * 目录很小，首次搜索拉 4 个页面即可，之后 10 分钟内复用。
+     */
+    @Volatile private var catalogCache: Pair<Long, List<Series>>? = null
+    private fun comicCatalog(): List<Series> {
+        catalogCache?.let { if(clock()-it.first<600000) return it.second }
+        val all=linkedMapOf<String, Series>()
+        var page=1; var totalPages=1
+        while(page<=minOf(totalPages,12)) {
+            val fetched=runCatching { comicCatalogPage(page) }.getOrNull() ?: break
+            if(fetched.first.isEmpty()) break
+            fetched.first.forEach { all.putIfAbsent(it.id,it) }
+            totalPages=fetched.second
+            page++
         }
-        return items
+        val result=all.values.toList()
+        if(result.isNotEmpty()) catalogCache=clock() to result
+        return result
     }
-    /** 漫剧搜索兜底：在榜单（最多 5 页 / 100 部）内按标题匹配。 */
+    private fun comicCatalogPage(page: Int): Pair<List<Series>, Int> {
+        val data=router("$site/category/comic?page=$page")
+        val section=data.optJSONObject("category_page") ?: data.optJSONObject("category_$") ?: throw IOException("漫剧目录暂不可用")
+        val rows=section.optJSONArray("recommendList") ?: section.optJSONObject("categoryData")?.optJSONArray("recommendList") ?: throw IOException("漫剧目录格式已变化")
+        val totalPages=section.optJSONObject("pagination")?.optInt("totalPages",1) ?: 1
+        return valid(rows.objects().map(::card)) to totalPages
+    }
+    /** 漫剧搜索兜底：在完整目录内按标题优先、简介其次匹配。 */
     private fun comicFallback(keyword: String, page: Int): CatalogPage {
-        if(page>1) return CatalogPage(emptyList(),false)
         val key=keyword.trim()
-        val hits=mutableListOf<Series>()
-        for(p in 1..5) {
-            val items=runCatching { comicCatalogPage(p) }.getOrDefault(emptyList())
-            if(items.isEmpty()) break
-            hits+=items.filter { it.title.contains(key,ignoreCase=true) }
-        }
-        return CatalogPage(hits.distinctBy { it.id },false)
+        val catalog=runCatching { comicCatalog() }.getOrElse { return CatalogPage(emptyList(),false) }
+        if(catalog.isEmpty()) return CatalogPage(emptyList(),false)
+        val titleHits=catalog.filter { it.title.contains(key,ignoreCase=true) }
+        val titleIds=titleHits.map { it.id }.toSet()
+        val introHits=catalog.filter { it.id !in titleIds && it.description.contains(key,ignoreCase=true) }
+        val hits=(titleHits+introHits).distinctBy { it.id }
+        val per=20; val from=(page-1)*per
+        if(from>=hits.size) return CatalogPage(emptyList(),false)
+        return CatalogPage(hits.subList(from,minOf(from+per,hits.size)),from+per<hits.size)
     }
     fun home(page: Int = 1, type: ContentType = ContentType.SHORT): CatalogPage {        require(page in 1..100)
         if(type==ContentType.COMIC) return comicRanking(page)

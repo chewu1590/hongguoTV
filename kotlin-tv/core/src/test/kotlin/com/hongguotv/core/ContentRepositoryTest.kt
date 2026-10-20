@@ -234,6 +234,22 @@ class ContentRepositoryTest {
         assertEquals(1,requests)
     }
 
+    @Test fun comicSearchFallsBackToFullCatalogWhenAppSearchIsEmpty() {
+        val repo=repository { request ->
+            when(request.url.encodedPath) {
+                "/reading/bookapi/search/tab/v" -> ""   // 应用内搜索接口对漫剧返回空 body
+                "/category/comic" -> """<script>_ROUTER_DATA={"loaderData":{"category_page":{"recommendList":[
+                    {"video_data":{"series_id":"777","series_name":"天神殿","series_cover":"https:\\u002F\\u002Fexample.com\\u002Fc.jpg","episode_cnt":30}},
+                    {"video_data":{"series_id":"888","series_name":"乡村神医","series_intro":"修仙之路"}}
+                ],"pagination":{"totalPages":1}}}}</script>"""
+                else -> ""
+            }
+        }
+        assertEquals(listOf("777"),repo.search("天神殿",1,ContentType.COMIC).items.map { it.id })
+        assertEquals(listOf("888"),repo.search("修仙",1,ContentType.COMIC).items.map { it.id })
+        assertTrue(repo.search("不存在的片名",1,ContentType.COMIC).items.isEmpty())
+    }
+
     @Test fun shortSearchKeepsWebsiteFallback() {
         val paths=mutableListOf<String>()
         val repo=repository { request ->

@@ -25,7 +25,7 @@ fun main(args: Array<String>) {
         return
     }
     val type=if(args.contains("--comic")) ContentType.COMIC else ContentType.SHORT
-    val keyword=if(type==ContentType.COMIC) "修仙" else "总裁"
+    val keyword=args.firstOrNull { it.startsWith("q=") }?.removePrefix("q=") ?: if(type==ContentType.COMIC) "修仙" else "总裁"
     val search=repository.search(keyword,type=type); println("search=${search.items.size}; hasMore=${search.hasMore}")
     if(type==ContentType.COMIC && search.hasMore) {
         val next=repository.search(keyword,2,type)
