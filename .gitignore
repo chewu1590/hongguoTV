@@ -37,3 +37,4 @@ keystore.properties
 /ios/Pods/
 /ios/build/
 /tools/*.png
+/tools/*.log
