@@ -83,3 +83,15 @@ cd E:\aiprojects\hongguoTV\tools
 - `:core:test` 里 `AppUpdatesTest.verifiedDownloadAtomicallyReplacesOldFile` 在 Windows 上失败
   （临时文件原子替换的路径语义差异），与定制改动无关，上游代码同样失败
 - `adb screencap` 抓不到播放中的画面：小米盒子（Amlogic）的视频层不参与截图合成，属正常现象
+
+---
+
+## 六、排查支持
+
+- **落盘日志**：`AppLog`（`kotlin-tv/app/src/main/kotlin/.../AppLog.kt`）把关键事件写进
+  `files/logs/app.log`，单文件 512 KB 滚动，磁盘占用恒定 ≤1 MB。
+  记录范围：启动信息、首页/列表加载耗时与结果、搜索（类型+关键词+条数）、详情、
+  播放就绪/首帧/失败、本机记录加载失败。
+- **一键取证**：`tools/pull-logs.ps1` → 生成 `logs/<时间戳>/summary.txt`（设备信息 +
+  最近日志 + 所有告警行），需要他人协助定位时把这一份发出来即可。
+- **电视上看**：设置 → 诊断日志。

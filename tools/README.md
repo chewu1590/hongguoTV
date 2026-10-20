@@ -152,6 +152,31 @@ Syncthing 更适合"自动同步某个目录"（比如你的 APK 输出目录）
 
 ---
 
+## 出问题了怎么取证：`pull-logs.ps1`
+
+App 会把关键事件写进 `/data/data/com.hongguotv.custom/files/logs/app.log`
+（单文件 512 KB，写满滚动成 `app.1.log`，磁盘占用恒定 1 MB 以内）。
+logcat 是环形缓冲，重启就没了，所以这个落盘日志才是排查主力。
+
+```powershell
+cd E:\aiprojects\hongguoTV\tools
+.\pull-logs.ps1
+```
+
+产物在 `E:\aiprojects\hongguoTV\logs\<时间戳>\`：
+
+| 文件 | 内容 |
+|---|---|
+| `summary.txt` | **发这个最快**：设备信息 + app.log 最近 40 行 + 所有 E/W 行 + logcat 尾部 |
+| `app.log` / `app.1.log` | 完整落盘日志（debug 包走 `adb shell run-as`，不需要 root） |
+| `logcat.txt` | 本次 logcat 里 `HongguoTV` 与崩溃相关行 |
+| `device.txt` | 型号 / 系统版本 / 安装时间 / versionCode |
+
+电视上也能直接看：**设置 → 诊断日志**，弹窗里有路径、大小和最近 16 行。
+
+记什么：启动信息（版本/包名/是否检查更新）、首页加载耗时、每次列表/搜索请求
+（tab、类型、页码、关键词、返回条数）、详情打开、播放就绪/首帧/失败、本机记录加载失败。
+
 ## 常见问题
 
 | 现象 | 原因 / 解决 |

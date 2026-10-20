@@ -38,3 +38,4 @@ keystore.properties
 /ios/build/
 /tools/*.png
 /tools/*.log
+/logs/
