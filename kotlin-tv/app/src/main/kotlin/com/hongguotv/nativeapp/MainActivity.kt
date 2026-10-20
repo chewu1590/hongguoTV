@@ -181,7 +181,7 @@ class MainActivity: Activity() {
     private fun row()=LinearLayout(this).apply { orientation=LinearLayout.HORIZONTAL; gravity=Gravity.CENTER_VERTICAL }
     private fun focusStyle(view: View,selected: Boolean=false) {
         view.id=View.generateViewId(); view.isFocusable=true; view.isFocusableInTouchMode=true
-        fun paint(focused: Boolean) { view.background=rounded(if(focused) TvStyle.raised else if(selected) Color.rgb(61,39,34) else surface,if(focused) accent else Color.TRANSPARENT) }
+        fun paint(focused: Boolean) { view.background=rounded(if(focused) TvStyle.raised else if(selected) TvStyle.selectedTint else surface,if(focused) accent else Color.TRANSPARENT) }
         paint(false); view.setOnFocusChangeListener { _,focused -> paint(focused) }
     }
     private fun button(label: String,selected: Boolean=false,onClick: ()->Unit): TextView = text(label,15f).apply {
@@ -322,13 +322,13 @@ class MainActivity: Activity() {
         val top=row().apply { setPadding(0,0,0,dp(8)) }
         val brand=row()
         brand.addView(ImageView(this).apply { setImageResource(com.hongguotv.nativeapp.R.drawable.app_icon) },lp(dp(28),dp(28)).apply { rightMargin=dp(9) })
-        brand.addView(text("红果",22f).apply { typeface=Typeface.create("sans-serif-medium",Typeface.NORMAL) })
+        brand.addView(text(BuildConfig.BRAND_SHORT,22f).apply { typeface=Typeface.create("sans-serif-medium",Typeface.NORMAL) })
         top.addView(brand,lp(dp(120),dp(44)))
         listOf("首页","搜索","排行榜","收藏","最近观看","设置").forEachIndexed { index,label ->
             val item=addButton(top,label,index==tab) { switchTab(index) }
             fun paint(focused: Boolean) {
                 item.setTextColor(if(focused) bg else if(index==tab) accent else muted)
-                item.background=rounded(if(focused) white else if(index==tab) Color.rgb(48,32,29) else Color.TRANSPARENT)
+                item.background=rounded(if(focused) white else if(index==tab) TvStyle.navTint else Color.TRANSPARENT)
                 item.setTypeface(null,if(focused || index==tab) Typeface.BOLD else Typeface.NORMAL)
             }
             paint(false); item.setOnFocusChangeListener { _,focused -> paint(focused) }; nav+=item
@@ -711,7 +711,7 @@ class MainActivity: Activity() {
         left.forEachIndexed { i,v -> v.nextFocusLeftId=v.id; v.nextFocusRightId=right[i].id }
         right.forEachIndexed { i,v -> v.nextFocusLeftId=left[i].id; v.nextFocusRightId=v.id }
         nav.forEach { it.nextFocusDownId=qualityButton.id }
-        parent.addView(text("红果 TV  /  ${BuildConfig.VERSION_NAME}    ·    收藏与进度保存在本机",12f,muted).apply { setPadding(dp(2),dp(18),0,dp(10)) })
+        parent.addView(text("${BuildConfig.APP_LABEL}  /  ${BuildConfig.VERSION_NAME}    ·    收藏与进度保存在本机",12f,muted).apply { setPadding(dp(2),dp(18),0,dp(10)) })
         nav[tab].requestFocus()
     }
     private fun runSearch(value: String,type: ContentType=library.contentType) {
