@@ -8,11 +8,15 @@ android {
     namespace = "com.hongguotv.nativeapp"
     compileSdk = 36
     defaultConfig {
-        applicationId = "com.hongguotv.nativeapp"
+        // 定制版：与官方 com.hongguotv.nativeapp 隔离，可同机共存，互不覆盖。
+        // 需要别的包名时用 HONGGUOTV_APPLICATION_ID 覆盖，不必改代码。
+        applicationId = System.getenv("HONGGUOTV_APPLICATION_ID") ?: "com.hongguotv.custom"
         minSdk = 26
         targetSdk = 36
         versionCode = System.getenv("HONGGUOTV_VERSION_CODE")?.toInt() ?: 9
-        versionName = System.getenv("HONGGUOTV_VERSION_NAME") ?: "0.9.0"
+        versionName = System.getenv("HONGGUOTV_VERSION_NAME") ?: "0.9.0-custom"
+        // 定制版不追踪官方 release：置 true 才会恢复自动更新检查。
+        buildConfigField("boolean", "CHECK_UPDATES", (System.getenv("HONGGUOTV_CHECK_UPDATES") ?: "false"))
     }
     buildFeatures { buildConfig = true }
     signingConfigs {

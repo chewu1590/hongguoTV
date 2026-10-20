@@ -26,7 +26,7 @@ param(
     [string]$Subnet = "192.168.31",
     [int]$Port = 5555,
     [string]$Serial = "",
-    [string]$Package = "com.hongguotv.nativeapp",
+    [string]$Package = "com.hongguotv.custom",
     [string]$PushFile = "",
     [string]$PushTo = "/sdcard/Download/",
     [switch]$Uninstall,
@@ -142,10 +142,15 @@ if ($installOut -notmatch "Success") {
 
 # ---- 启动 ----
 Write-Host "[i] 启动 $Package ..." -ForegroundColor Cyan
-$component = "$Package/.MainActivity"
-$startOut = (& $adb -s $Serial shell am start -n $component 2>&1 | Out-String)
-if ($startOut -match "Error|Exception") {
-    # 入口类名不同时的兜底：用 monkey 按包名拉起
+# 定制版 applicationId 与代码 namespace 可以不同，所以要动态解析真正的入口 Activity
+$resolve = (& $adb -s $Serial shell cmd package resolve-activity --brief -a android.intent.action.MAIN -c android.intent.category.LEANBACK_LAUNCHER $Package 2>&1 | Out-String)
+$component = ($resolve -split "`r?`n" | Where-Object { $_ -match "\S+/\S+" } | Select-Object -Last 1)
+if ($component) {
+    $component = $component.Trim()
+    $startOut = (& $adb -s $Serial shell am start -n $component 2>&1 | Out-String)
+    if ($startOut -match "Error|Exception") { $component = "" }
+}
+if (-not $component) {
     & $adb -s $Serial shell monkey -p $Package 1 2>&1 | Out-Null
 }
 Write-Host "[✓] 完成：$Package 已在 $Serial 上运行" -ForegroundColor Green

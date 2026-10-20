@@ -1,4 +1,4 @@
-# Local machine and IDE files
+﻿# Local machine and IDE files
 .DS_Store
 .idea/
 *.iml
@@ -36,3 +36,4 @@ keystore.properties
 .externalNativeBuild/
 /ios/Pods/
 /ios/build/
+/tools/*.png

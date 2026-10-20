@@ -46,7 +46,8 @@ class AppUpdater(private val activity: Activity, private val idle: () -> Boolean
     private var status = "当前版本 ${BuildConfig.VERSION_NAME}"
     private var retryAfter = 0L
     private var promptedCode = 0L
-    private val auto get() = preferences.getBoolean("automatic", true)
+    // 定制版（CHECK_UPDATES=false）既不轮询也不发任何更新请求，避免被官方包覆盖安装。
+    private val auto get() = BuildConfig.CHECK_UPDATES && preferences.getBoolean("automatic", true)
     private val poll = object : Runnable {
         override fun run() {
             if (!active) return
@@ -102,13 +103,16 @@ class AppUpdater(private val activity: Activity, private val idle: () -> Boolean
         body.addView(statusView)
         body.addView(CheckBox(activity).apply {
             text = "自动检查并下载更新"; isChecked = auto
+            visibility = if (BuildConfig.CHECK_UPDATES) View.VISIBLE else View.GONE
             setOnCheckedChangeListener { _, enabled ->
                 preferences.edit().putBoolean("automatic", enabled).apply()
                 if (!enabled && busy) { interrupt(); updateStatus("自动更新已关闭，可手动检查"); renderActions() }
             }
         })
         body.addView(TextView(activity).apply {
-            text = "只在应用前台浏览时检查，播放中不打扰。下载后需确认系统安装，收藏与观看记录保留。"; textSize = 13f; setTextColor(TvStyle.muted)
+            text = if (BuildConfig.CHECK_UPDATES) "只在应用前台浏览时检查，播放中不打扰。下载后需确认系统安装，收藏与观看记录保留。"
+                   else "定制版已关闭官方更新通道，不会下载或安装 N3urda 的发行版。新版请自行构建安装，收藏与观看记录会保留。"
+            textSize = 13f; setTextColor(TvStyle.muted)
             setPadding(0, (8*dp).toInt(), 0, (8*dp).toInt())
         })
         val next = AlertDialog.Builder(activity).setTitle("版本与更新 · ${BuildConfig.VERSION_NAME}").setView(ScrollView(activity).apply { addView(body) })
@@ -143,6 +147,12 @@ class AppUpdater(private val activity: Activity, private val idle: () -> Boolean
     }
     private fun check(manual: Boolean) {
         if (busy || !active || !idle()) return
+        if (!BuildConfig.CHECK_UPDATES) {
+            available = null; ready = false
+            updateStatus("定制版不检查官方更新\n当前版本 ${BuildConfig.VERSION_NAME}，请自行构建安装新版。")
+            renderActions()
+            return
+        }
         preferences.edit().putLong("last_attempt", System.currentTimeMillis()).apply()
         updateStatus("正在检查新版…")
         work({ repository.latest() }) { update ->

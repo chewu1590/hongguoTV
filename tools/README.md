@@ -3,6 +3,9 @@
 三个脚本，都在 `tools/` 下。核心思路：**让电视盒子通过 adb over WiFi 变成一台可远程安装的设备**，
 装包就一行命令，不用再拷 U 盘、不用来回插拔。
 
+> **定制版包名**：本仓库已改成 `com.hongguotv.custom`（可同机与官方版共存），
+> 因此 `tv-deploy.ps1` 默认 `-Package com.hongguotv.custom`；装官方版时加 `-Package com.hongguotv.nativeapp`。
+
 ---
 
 ## 方案对比
