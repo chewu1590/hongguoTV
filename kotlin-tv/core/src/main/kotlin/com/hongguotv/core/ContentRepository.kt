@@ -23,6 +23,7 @@ data class ComicRanking(val positions: Map<String,RankPosition>, val totalPages:
 data class CatalogPage(val items: List<Series>, val hasMore: Boolean, val ranking: ComicRanking? = null)
 data class StreamInfo(val url: String, val key: ByteArray?, val quality: String)
 class SearchSessionExpiredException: IOException("搜索结果已过期，请从第 1 页重新搜索")
+class ComicTabUnavailableException: IOException("漫剧搜索暂不可用")
 
 class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().connectTimeout(15,TimeUnit.SECONDS).readTimeout(30,TimeUnit.SECONDS).callTimeout(45,TimeUnit.SECONDS).build(), private val clock: () -> Long = System::currentTimeMillis) {
     private val signer = Signer()
@@ -55,8 +56,30 @@ class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().connectT
         require(page in 1..100)
         return ComicRank.parse(text("$site/rank/hot-comic-drama?page=$page"),page)
     }
-    fun home(page: Int = 1, type: ContentType = ContentType.SHORT): CatalogPage {
-        require(page in 1..100)
+    /** 漫剧榜单分页缓存，本地搜索兜底时避免重复拉取。 */
+    private val comicCatalog=linkedMapOf<Int, Pair<Long, List<Series>>>()
+    private fun comicCatalogPage(page: Int): List<Series> {
+        synchronized(comicCatalog) { comicCatalog[page]?.let { if(clock()-it.first<300000) return it.second } }
+        val items=comicRanking(page).items
+        synchronized(comicCatalog) {
+            comicCatalog[page]=clock() to items
+            while(comicCatalog.size>6) comicCatalog.remove(comicCatalog.keys.first())
+        }
+        return items
+    }
+    /** 漫剧搜索兜底：在榜单（最多 5 页 / 100 部）内按标题匹配。 */
+    private fun comicFallback(keyword: String, page: Int): CatalogPage {
+        if(page>1) return CatalogPage(emptyList(),false)
+        val key=keyword.trim()
+        val hits=mutableListOf<Series>()
+        for(p in 1..5) {
+            val items=runCatching { comicCatalogPage(p) }.getOrDefault(emptyList())
+            if(items.isEmpty()) break
+            hits+=items.filter { it.title.contains(key,ignoreCase=true) }
+        }
+        return CatalogPage(hits.distinctBy { it.id },false)
+    }
+    fun home(page: Int = 1, type: ContentType = ContentType.SHORT): CatalogPage {        require(page in 1..100)
         if(type==ContentType.COMIC) return comicRanking(page)
         val data=router("$site/category?tab=1&sort_type=1"+if(page>1) "&page=$page" else "")
         val section=data.optJSONObject("category_page") ?: data.optJSONObject("category_$") ?: throw IOException("首页数据结构已变化")
@@ -67,8 +90,14 @@ class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().connectT
     }
     fun search(keyword: String, page: Int = 1, type: ContentType = ContentType.SHORT): CatalogPage {
         require(keyword.isNotBlank() && keyword.length<=80 && page in 1..100)
-        // The website search does not constrain content type. Never use it for comics.
-        if(type==ContentType.COMIC) return appSearch(keyword,page,type)
+        // 应用内搜索接口对漫剧（tab_type=19）已失效：任何关键词都返回 HTTP 200 空 body。
+        // 站点也没有漫剧搜索路由（/search/{kw} 只覆盖短剧，/category/comic 忽略 keyword），
+        // 因此退化为在漫剧榜单内按标题匹配，至少不再抛 JSON 异常。
+        if(type==ContentType.COMIC) {
+            val app=try { appSearch(keyword,page,type) } catch (e: SearchSessionExpiredException) { throw e } catch (e: ComicTabUnavailableException) { throw e } catch (e: Exception) { null }
+            if(app!=null) return app  // 服务端给了合法响应就以它为准（含空结果）
+            return comicFallback(keyword,page)
+        }
         try { val result=appSearch(keyword,page,type); if(result.items.isNotEmpty() || !result.hasMore) return result } catch (e: Exception) { if(e is SearchSessionExpiredException) throw e; /* Website fallback for short dramas only. */ }
         val data=router("$site/search/${Signer.encode(keyword)}?page=$page")
         val section=data.optJSONObject("search_(keyword)/page") ?: data.optJSONObject("search_page") ?: throw IOException("搜索数据暂不可用")
@@ -93,10 +122,14 @@ class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().connectT
             it.offset?.takeIf { offset -> offset>=0 }?.let { offset -> values["offset"]=offset.toString() }
         }
         val signed=signer.sign("https://api5-normal-sinfonlinea.fqnovel.com/reading/bookapi/search/tab/v",values)
-        val data=JSONObject(text(signed.url,signed))
+        val body=text(signed.url,signed)
+        // 服务端静默拒绝时会返回 HTTP 200 + 空 body，直接 JSONObject("") 会抛
+        // "A JSONObject text must begin with '{'"，这里换成可读的错误。
+        if(body.isBlank()) throw IOException("搜索接口暂不可用")
+        val data=JSONObject(body)
         if(data.optInt("code",-1)!=0) throw IOException("搜索接口暂不可用")
         val tabs=data.optJSONArray("search_tabs") ?: data.optJSONObject("data")?.optJSONArray("search_tabs") ?: throw IOException("搜索格式异常")
-        val tab=tabs.objects().firstOrNull { it.optInt("tab_type")==type.searchTab } ?: throw IOException("${type.label}搜索暂不可用")
+        val tab=tabs.objects().firstOrNull { it.optInt("tab_type")==type.searchTab } ?: throw ComicTabUnavailableException()
         val list=mutableListOf<Series>()
         for(cell in (tab.optJSONArray("data") ?: JSONArray()).objects()) {
             val cells=mutableListOf(cell)
